@@ -1,0 +1,36 @@
+<root>
+    <name>Webhooks</name>
+    <key>webhooks</key>
+    <state>stable</state>
+    <description>
+        <short>
+            <en>Generic webhook registry. First feature: expiration-alerts cron.</en>
+            <es>Registro generico de webhooks. Primer feature: cron de avisos de vencimiento.</es>
+        </short>
+        <long>
+            <en>Provides a webhook registry (name, URL, itemtypes) that plugin features can POST to. Ships with an expiration-check cron that reads per-entity alert anticipation and notifies webhooks when Contracts, SoftwareLicenses, Certificates, Domains or Infocom warranties are about to expire. Additional features can be added without schema changes.</en>
+            <es>Provee un registro de webhooks (nombre, URL, itemtypes) contra el cual features del plugin pueden publicar. Incluye un cron de chequeo de vencimientos que lee la anticipacion configurada por entidad y notifica a los webhooks cuando contratos, licencias, certificados, dominios o garantias (Infocom) estan por vencer. Se pueden sumar mas features sobre la misma infraestructura.</es>
+        </long>
+    </description>
+    <authors>
+        <author>Jonatan Riccillo</author>
+    </authors>
+    <versions>
+        <version>
+            <num>1.0.0</num>
+            <compatibility>~11.0.0</compatibility>
+        </version>
+    </versions>
+    <langs>
+        <lang>en_GB</lang>
+        <lang>es_AR</lang>
+    </langs>
+    <license>GPLv3</license>
+    <tags>
+        <en>
+            <tag>Webhook</tag>
+            <tag>Notification</tag>
+            <tag>Integration</tag>
+        </en>
+    </tags>
+</root>
