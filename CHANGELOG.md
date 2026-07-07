@@ -2,9 +2,6 @@
 
 Todas las versiones notables del plugin **Webhooks para GLPI 11**.
 
-El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
-y el proyecto adopta [Versionado Semántico](https://semver.org/lang/es/).
-
 ## [1.1.0]
 
 Segunda familia de features: **eventos de ticket** en tiempo real, además
