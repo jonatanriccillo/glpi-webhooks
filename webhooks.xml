@@ -4,12 +4,12 @@
     <state>stable</state>
     <description>
         <short>
-            <en>Generic webhook registry. First feature: expiration-alerts cron.</en>
-            <es>Registro generico de webhooks. Primer feature: cron de avisos de vencimiento.</es>
+            <en>Generic webhook registry: expiration-alerts cron, plus real-time Ticket-event webhooks.</en>
+            <es>Registro generico de webhooks: cron de avisos de vencimiento, mas webhooks de eventos de Ticket en tiempo real.</es>
         </short>
         <long>
-            <en>Provides a webhook registry (name, URL, itemtypes) that plugin features can POST to. Ships with an expiration-check cron that reads per-entity alert anticipation and notifies webhooks when Contracts, SoftwareLicenses, Certificates, Domains or Infocom warranties are about to expire. Additional features can be added without schema changes.</en>
-            <es>Provee un registro de webhooks (nombre, URL, itemtypes) contra el cual features del plugin pueden publicar. Incluye un cron de chequeo de vencimientos que lee la anticipacion configurada por entidad y notifica a los webhooks cuando contratos, licencias, certificados, dominios o garantias (Infocom) estan por vencer. Se pueden sumar mas features sobre la misma infraestructura.</es>
+            <en>Provides a webhook registry (name, URL, trigger type) that plugin features publish against. Each webhook picks a trigger_type: 'expiration' (a cron that notifies when Contracts, SoftwareLicenses, Certificates, Domains or Infocom warranties are about to expire) or 'ticket' (real-time lifecycle hooks mirroring GLPI's own Ticket notification event catalog — created, updated, solved/closed, assigned, followups/tasks, validations, satisfaction survey, etc.), filtered by an embedded native GLPI search-criteria builder. Additional features can be added without schema changes.</en>
+            <es>Provee un registro de webhooks (nombre, URL, tipo de disparador) contra el cual features del plugin publican. Cada webhook elige un trigger_type: 'expiration' (cron que notifica cuando contratos, licencias, certificados, dominios o garantias Infocom estan por vencer) o 'ticket' (hooks de ciclo de vida en tiempo real que reflejan el catalogo nativo de notificaciones de Ticket de GLPI: creacion, actualizacion, resuelto/cerrado, asignacion, seguimientos/tareas, validaciones, encuesta de satisfaccion, etc.), filtrado con un constructor de criterios nativo de GLPI embebido. Se pueden sumar mas features sobre la misma infraestructura.</es>
         </long>
     </description>
     <authors>
@@ -18,6 +18,10 @@
     <versions>
         <version>
             <num>1.0.0</num>
+            <compatibility>~11.0.0</compatibility>
+        </version>
+        <version>
+            <num>1.1.0</num>
             <compatibility>~11.0.0</compatibility>
         </version>
     </versions>
