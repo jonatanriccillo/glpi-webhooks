@@ -61,6 +61,75 @@ JSON;
     ];
 
     /**
+     * Placeholders available to webhooks with trigger_type = 'ticket'.
+     */
+    public const TICKET_PLACEHOLDERS = [
+        'event'          => 'Clave del evento (new, update, solved, closed, assign_user, add_followup, add_task, validation, satisfaction, etc. — ver catálogo completo en la pestaña "Eventos")',
+        'event_label'    => 'Etiqueta humana del evento',
+        'ticket_id'      => 'ID del ticket',
+        'title'          => 'Título del ticket',
+        'status_label'   => 'Estado actual (Nuevo / En curso / Resuelto / …)',
+        'priority_label' => 'Prioridad',
+        'urgency_label'  => 'Urgencia',
+        'impact_label'   => 'Impacto',
+        'type_label'     => 'Tipo (Incidencia / Solicitud)',
+        'category'       => 'Categoría ITIL',
+        'requester'      => 'Solicitante(s)',
+        'assigned'       => 'Asignado a (técnicos y grupos)',
+        'content'        => 'Descripción del ticket (texto plano, recortado)',
+        'event_content'  => 'Contenido del seguimiento / tarea / solución (según el evento)',
+        'author'         => 'Usuario que disparó el evento',
+        'entity'         => 'Entidad (completename)',
+        'ticket_url'     => 'URL al ticket en GLPI',
+        'emoji'          => 'Emoji Slack según el evento',
+        'date'           => 'Fecha/hora del evento',
+    ];
+
+    public const DEFAULT_TICKET_TEMPLATE = <<<'JSON'
+{
+  "text": "{emoji} {event_label} — #{ticket_id} {title}",
+  "blocks": [
+    {
+      "type": "header",
+      "text": { "type": "plain_text", "text": "{emoji} {event_label}", "emoji": true }
+    },
+    {
+      "type": "section",
+      "fields": [
+        { "type": "mrkdwn", "text": "*Ticket:*\n#{ticket_id} — {title}" },
+        { "type": "mrkdwn", "text": "*Estado:*\n{status_label}" },
+        { "type": "mrkdwn", "text": "*Prioridad:*\n{priority_label}" },
+        { "type": "mrkdwn", "text": "*Categoría:*\n{category}" },
+        { "type": "mrkdwn", "text": "*Solicitante:*\n{requester}" },
+        { "type": "mrkdwn", "text": "*Asignado:*\n{assigned}" }
+      ]
+    },
+    {
+      "type": "section",
+      "text": { "type": "mrkdwn", "text": "{content}" }
+    },
+    {
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": { "type": "plain_text", "text": "Abrir en GLPI", "emoji": true },
+          "url": "{ticket_url}",
+          "style": "primary"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        { "type": "mrkdwn", "text": "{entity} · por {author} · {date}" }
+      ]
+    }
+  ]
+}
+JSON;
+
+    /**
      * Replaces {placeholders} with JSON-safe values, then decodes the result
      * as a JSON array. Returns [payload_array|null, error_message|null].
      */
@@ -112,7 +181,7 @@ JSON;
      * POST (or other method) the given payload to $url. Returns array with
      * ok / status / response / error.
      */
-    public static function send(string $url, array $payload, string $method = 'POST', array $extra_headers = []): array
+    public static function send(string $url, array $payload, string $method = 'POST', array $extra_headers = [], int $timeout = 15): array
     {
         $body = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($body === false) {
@@ -138,8 +207,8 @@ JSON;
             CURLOPT_CUSTOMREQUEST  => strtoupper($method),
             CURLOPT_POSTFIELDS     => $body,
             CURLOPT_HTTPHEADER     => $headers,
-            CURLOPT_TIMEOUT        => 15,
-            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT        => $timeout,
+            CURLOPT_CONNECTTIMEOUT => min($timeout, 10),
             CURLOPT_SSL_VERIFYPEER => true,
         ]);
 
@@ -197,7 +266,12 @@ JSON;
             [
                 'last_sent_date'   => $now,
                 'last_http_status' => $status,
-                'last_error'       => $result['ok'] ? null : self::excerpt($error ?? ''),
+                // On success, keep the response body (like the test path already
+                // does) instead of clearing the detail column — otherwise a
+                // healthy 2xx send shows an empty "Detalle" in the Estado tab.
+                'last_error'       => $result['ok']
+                    ? ($response !== '' ? self::excerpt($response) : null)
+                    : self::excerpt($error ?? ''),
             ],
             ['id' => $webhooks_id]
         );
@@ -236,6 +310,50 @@ JSON;
             'days_left_label' => '15 días',
             'item_url'        => rtrim((string) ($CFG_GLPI['url_base'] ?? ''), '/'),
             'emoji'           => ':hourglass_flowing_sand:',
+        ];
+    }
+
+    /**
+     * Synthetic context for the "Send test" button on a ticket-type webhook.
+     * Uses static sample values (no live GLPI lookups) so it is safe to render
+     * anywhere, including the payload preview.
+     */
+    public static function buildTicketTestContext(PluginWebhooksWebhook $webhook): array
+    {
+        global $CFG_GLPI;
+
+        $entity_name = '';
+        $entity = new Entity();
+        if ($entity->getFromDB((int) $webhook->fields['entities_id'])) {
+            $entity_name = (string) $entity->fields['completename'];
+        }
+
+        $author = (string) ($_SESSION['glpifriendlyname'] ?? $_SESSION['glpiname'] ?? 'GLPI');
+
+        return [
+            'event'          => 'new',
+            'event_label'    => 'Ticket nuevo',
+            'ticket_id'      => 0,
+            'title'          => 'TEST — ' . $webhook->fields['name'],
+            'status_label'   => 'Nuevo',
+            'priority_label' => 'Media',
+            'urgency_label'  => 'Media',
+            'impact_label'   => 'Medio',
+            'type_label'     => 'Incidencia',
+            'category'       => 'Soporte',
+            'requester'      => 'Juan Pérez',
+            'assigned'       => '—',
+            'content'        => 'Ticket de prueba generado desde la configuración del webhook.',
+            'event_content'  => '',
+            'author'         => $author,
+            'entity'         => $entity_name,
+            'ticket_url'     => rtrim((string) ($CFG_GLPI['url_base'] ?? ''), '/') . '/front/ticket.form.php?id=0',
+            'emoji'          => ':new:',
+            'date'           => $_SESSION['glpi_currenttime'] ?? date('Y-m-d H:i:s'),
+            // Silent aliases so a template borrowed from the expiration set still renders.
+            'id'             => 0,
+            'name'           => 'TEST — ' . $webhook->fields['name'],
+            'item_url'       => rtrim((string) ($CFG_GLPI['url_base'] ?? ''), '/'),
         ];
     }
 

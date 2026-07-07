@@ -57,6 +57,23 @@ class PluginWebhooksProfile extends Profile
         }
     }
 
+    public function getTabNameForItem(CommonGLPI $item, $withtemplate = 0)
+    {
+        if (!$withtemplate && $item instanceof Profile && (int) $item->getID() > 0) {
+            return self::createTabEntry(__('Webhooks', 'webhooks'), 0, null, 'ti ti-webhook');
+        }
+        return '';
+    }
+
+    public static function displayTabContentForItem(CommonGLPI $item, $tabnum = 1, $withtemplate = 0)
+    {
+        if ($item instanceof Profile) {
+            $prof = new self();
+            $prof->showForm($item->getID());
+        }
+        return true;
+    }
+
     public function showForm($profiles_id = 0, $openform = true, $closeform = true)
     {
         echo "<div class='firstbloc'>";

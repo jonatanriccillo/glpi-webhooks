@@ -6,8 +6,11 @@ CREATE TABLE IF NOT EXISTS `glpi_plugin_webhooks_webhooks` (
     `url` TEXT NOT NULL,
     `http_method` VARCHAR(10) NOT NULL DEFAULT 'POST',
     `headers` TEXT,
+    `trigger_type` VARCHAR(20) NOT NULL DEFAULT 'expiration',
     `itemtypes` TEXT NOT NULL,
     `anticipation_days` INT NOT NULL DEFAULT 30,
+    `ticket_events` TEXT,
+    `ticket_criteria` TEXT,
     `payload_template` LONGTEXT,
     `is_active` TINYINT NOT NULL DEFAULT 1,
     `comment` TEXT,
@@ -39,6 +42,22 @@ CREATE TABLE IF NOT EXISTS `glpi_plugin_webhooks_sent` (
     UNIQUE KEY `unicity` (`webhooks_id`, `itemtype`, `items_id`, `expiration_date`),
     KEY `itemtype` (`itemtype`, `items_id`),
     KEY `sent_date` (`sent_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
+
+CREATE TABLE IF NOT EXISTS `glpi_plugin_webhooks_events` (
+    `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    `webhooks_id` INT UNSIGNED NOT NULL,
+    `itemtype` VARCHAR(100) NOT NULL,
+    `items_id` INT UNSIGNED NOT NULL,
+    `event` VARCHAR(50) NOT NULL,
+    `http_status` INT DEFAULT NULL,
+    `response_excerpt` TEXT,
+    `error` TEXT,
+    `event_date` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `webhooks_id` (`webhooks_id`),
+    KEY `item` (`itemtype`, `items_id`),
+    KEY `event_date` (`event_date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS `glpi_plugin_webhooks_profiles` (

@@ -61,11 +61,19 @@ class PluginWebhooksWebhook extends CommonDBTM
     public function getTabNameForItem(CommonGLPI $item, $withtemplate = 0)
     {
         if ($item instanceof self && $item->fields['id'] > 0) {
+            if ($item->isTicketType()) {
+                return [
+                    1 => self::createTabEntry(__('Payload', 'webhooks'), 0, null, 'ti ti-braces'),
+                    5 => self::createTabEntry(__('Filtros', 'webhooks'), 0, null, 'ti ti-filter'),
+                    3 => self::createTabEntry(__('Prueba y estado', 'webhooks'), 0, null, 'ti ti-send'),
+                    6 => self::createTabEntry(__('Registro de eventos', 'webhooks'), 0, null, 'ti ti-history'),
+                ];
+            }
             return [
-                1 => __('Payload', 'webhooks'),
-                2 => __('Por vencer', 'webhooks'),
-                3 => __('Prueba y estado', 'webhooks'),
-                4 => __('Registro de envíos', 'webhooks'),
+                1 => self::createTabEntry(__('Payload', 'webhooks'), 0, null, 'ti ti-braces'),
+                2 => self::createTabEntry(__('Por vencer', 'webhooks'), 0, null, 'ti ti-calendar-stats'),
+                3 => self::createTabEntry(__('Prueba y estado', 'webhooks'), 0, null, 'ti ti-send'),
+                4 => self::createTabEntry(__('Registro de envíos', 'webhooks'), 0, null, 'ti ti-history'),
             ];
         }
         return '';
@@ -79,9 +87,25 @@ class PluginWebhooksWebhook extends CommonDBTM
                 case 2: $item->showUpcomingTab(); break;
                 case 3: $item->showTestTab(); break;
                 case 4: $item->showLogTab(); break;
+                case 5: $item->showFiltersTab(); break;
+                case 6: $item->showEventLogTab(); break;
             }
         }
         return true;
+    }
+
+    public function isTicketType(): bool
+    {
+        return ($this->fields['trigger_type'] ?? 'expiration') === 'ticket';
+    }
+
+    public function getSelectedEvents(): array
+    {
+        if (empty($this->fields['ticket_events'])) {
+            return [];
+        }
+        $decoded = json_decode((string) $this->fields['ticket_events'], true);
+        return is_array($decoded) ? $decoded : [];
     }
 
     public function rawSearchOptions(): array
@@ -93,6 +117,7 @@ class PluginWebhooksWebhook extends CommonDBTM
             ['id' => 2, 'table' => $t, 'field' => 'is_active', 'name' => __('Active'), 'datatype' => 'bool'],
             ['id' => 3, 'table' => $t, 'field' => 'url', 'name' => __('URL'), 'datatype' => 'text'],
             ['id' => 4, 'table' => $t, 'field' => 'http_method', 'name' => __('Método HTTP', 'webhooks'), 'datatype' => 'string'],
+            ['id' => 20, 'table' => $t, 'field' => 'trigger_type', 'name' => __('Disparador', 'webhooks'), 'datatype' => 'string'],
             ['id' => 5, 'table' => $t, 'field' => 'itemtypes', 'name' => __('Tipos de ítem', 'webhooks'), 'datatype' => 'text'],
             ['id' => 6, 'table' => $t, 'field' => 'anticipation_days', 'name' => __('Anticipación (días)', 'webhooks'), 'datatype' => 'integer'],
             ['id' => 7, 'table' => $t, 'field' => 'last_sent_date', 'name' => __('Último envío', 'webhooks'), 'datatype' => 'datetime', 'massiveaction' => false],
@@ -107,11 +132,21 @@ class PluginWebhooksWebhook extends CommonDBTM
 
     public function prepareInputForAdd($input)
     {
+        $trigger = in_array(($input['trigger_type'] ?? 'expiration'), ['expiration', 'ticket'], true)
+            ? $input['trigger_type']
+            : 'expiration';
+
         if (!isset($input['payload_template']) || trim((string) $input['payload_template']) === '') {
-            $input['payload_template'] = PluginWebhooksSender::DEFAULT_TEMPLATE;
+            $input['payload_template'] = $trigger === 'ticket'
+                ? PluginWebhooksSender::DEFAULT_TICKET_TEMPLATE
+                : PluginWebhooksSender::DEFAULT_TEMPLATE;
         }
         if (!isset($input['anticipation_days']) || (int) $input['anticipation_days'] <= 0) {
             $input['anticipation_days'] = 30;
+        }
+        // itemtypes is NOT NULL; ticket webhooks don't use it, so default to [].
+        if ($trigger === 'ticket' && empty($input['itemtypes'])) {
+            $input['itemtypes'] = json_encode([]);
         }
         return $this->sanitizeInput($input);
     }
@@ -123,6 +158,22 @@ class PluginWebhooksWebhook extends CommonDBTM
 
     private function sanitizeInput(array $input)
     {
+        if (isset($input['trigger_type'])) {
+            $input['trigger_type'] = in_array($input['trigger_type'], ['expiration', 'ticket'], true)
+                ? $input['trigger_type']
+                : 'expiration';
+        }
+
+        if (isset($input['ticket_events']) && is_array($input['ticket_events'])) {
+            $keep = [];
+            foreach ($input['ticket_events'] as $event) {
+                if (array_key_exists($event, PluginWebhooksTicketEvent::EVENTS)) {
+                    $keep[] = $event;
+                }
+            }
+            $input['ticket_events'] = json_encode(array_values(array_unique($keep)));
+        }
+
         if (isset($input['itemtypes']) && is_array($input['itemtypes'])) {
             $keep = [];
             foreach ($input['itemtypes'] as $itemtype) {
@@ -186,64 +237,92 @@ class PluginWebhooksWebhook extends CommonDBTM
         $this->initForm($ID, $options);
         $this->showFormHeader($options);
 
+        // showFormHeader() opens <table class='tab_cadre_fixe'><tr><td colspan=4>
+        // (GLPI's standard header cell). Close it and the table immediately —
+        // everything below uses Bootstrap's row/col grid instead of table rows,
+        // like the Payload/Filtros/Prueba tabs already do. A <table> forces
+        // every row sharing it to reconcile the SAME column widths, so a wide
+        // colspan=3 cell in one row could squeeze/overflow a discrete-column
+        // row elsewhere (this was pushing "Activo" off-screen). Bootstrap rows
+        // are independent flex containers — no such cross-row reconciliation.
+        // showFormButtons() later echoes its own "</table>"; with no table
+        // open at that point it's just an unmatched closing tag, which
+        // browsers ignore harmlessly.
+        echo '</td></tr></table>';
+
         $selected = $this->getSelectedItemtypes();
+        $trigger  = $this->fields['trigger_type'] ?? 'expiration';
 
-        echo "<tr class='tab_bg_2'><th colspan='4'><i class='ti ti-plug'></i> "
-            . __('Conexión', 'webhooks') . '</th></tr>';
+        echo '<div class="card mb-3">';
+        echo '<div class="card-header"><h3 class="card-title"><i class="ti ti-router"></i> '
+            . __('Tipo de webhook', 'webhooks') . '</h3></div>';
+        echo '<div class="card-body">';
+        echo '<div class="row g-3"><div class="col-md-6">';
+        echo '<label class="form-label"><i class="ti ti-bolt"></i> ' . __('Disparador', 'webhooks') . ' <span class="red">*</span></label>';
+        echo "<select name='trigger_type' id='webhooks_trigger_type' class='form-select' onchange='webhooksToggleTrigger(this.value)'>";
+        echo "<option value='expiration'" . ($trigger === 'expiration' ? ' selected' : '') . '>'
+            . __('Vencimientos (cron)', 'webhooks') . '</option>';
+        echo "<option value='ticket'" . ($trigger === 'ticket' ? ' selected' : '') . '>'
+            . __('Eventos de ticket (tiempo real)', 'webhooks') . '</option>';
+        echo '</select>';
+        echo '<div class="form-text">'
+            . __('“Vencimientos” escanea contratos/licencias/etc. por cron. “Eventos de ticket” dispara al crear o cambiar tickets, en tiempo real.', 'webhooks')
+            . '</div>';
+        echo '</div></div>'; // col, row
+        echo '</div></div>'; // card-body, card
 
-        echo "<tr class='tab_bg_1'>";
-        echo '<td><i class="ti ti-tag"></i> ' . __('Name') . ' <span class="red">*</span></td>';
-        echo '<td>' . Html::input('name', ['value' => $this->fields['name'] ?? '', 'size' => 40]) . '</td>';
-        echo '<td><i class="ti ti-bolt"></i> ' . __('Active') . '</td>';
-        echo '<td>';
+        echo '<div class="card mb-3">';
+        echo '<div class="card-header"><h3 class="card-title"><i class="ti ti-plug"></i> '
+            . __('Conexión', 'webhooks') . '</h3></div>';
+        echo '<div class="card-body">';
+
+        echo '<div class="row g-3 mb-1">';
+        echo '<div class="col-md-8">';
+        echo '<label class="form-label"><i class="ti ti-tag"></i> ' . __('Name') . ' <span class="red">*</span></label>';
+        echo Html::input('name', ['value' => $this->fields['name'] ?? '']);
+        echo '</div>';
+        echo '<div class="col-md-4">';
+        echo '<label class="form-label"><i class="ti ti-bolt"></i> ' . __('Active') . '</label><br>';
         Dropdown::showYesNo('is_active', $this->fields['is_active'] ?? 1);
-        echo '</td></tr>';
+        echo '</div>';
+        echo '</div>'; // row
 
-        echo "<tr class='tab_bg_1'>";
-        echo '<td><i class="ti ti-link"></i> ' . __('URL') . ' <span class="red">*</span></td>';
-        echo "<td colspan='3'>";
+        echo '<div class="row g-3 mb-1"><div class="col-12">';
+        echo '<label class="form-label"><i class="ti ti-link"></i> ' . __('URL') . ' <span class="red">*</span></label>';
         echo Html::input('url', [
             'value' => $this->fields['url'] ?? '',
-            'size'  => 90,
             'type'  => 'url',
             'placeholder' => 'https://hooks.slack.com/services/... (o cualquier endpoint JSON)',
         ]);
-        echo '<br><span class="text-muted"><small>'
-            . __('Endpoint HTTP(S) que va a recibir el payload JSON.', 'webhooks')
-            . '</small></span></td></tr>';
+        echo '<div class="form-text">' . __('Endpoint HTTP(S) que va a recibir el payload JSON.', 'webhooks') . '</div>';
+        echo '</div></div>'; // col, row
 
-        echo "<tr class='tab_bg_1'>";
-        echo '<td><i class="ti ti-arrow-right"></i> ' . __('Método HTTP', 'webhooks') . '</td>';
-        echo '<td>';
+        echo '<div class="row g-3"><div class="col-md-3">';
+        echo '<label class="form-label"><i class="ti ti-arrow-right"></i> ' . __('Método HTTP', 'webhooks') . '</label>';
         Dropdown::showFromArray(
             'http_method',
             array_combine(self::HTTP_METHODS, self::HTTP_METHODS),
             ['value' => $this->fields['http_method'] ?? 'POST']
         );
-        echo '</td>';
-        echo '<td><i class="ti ti-subtask"></i> ' . __('Child entities') . '</td>';
-        echo '<td>';
-        Dropdown::showYesNo('is_recursive', $this->fields['is_recursive'] ?? 1);
-        echo '</td></tr>';
-
-        echo "<tr class='tab_bg_1'>";
-        echo '<td><i class="ti ti-key"></i> ' . __('Headers custom', 'webhooks') . '</td>';
-        echo "<td colspan='3'>";
-        echo "<textarea name='headers' rows='3' style='width:100%; font-family:monospace; font-size:12px;' "
+        echo '</div>';
+        echo '<div class="col-md-9">';
+        echo '<label class="form-label"><i class="ti ti-key"></i> ' . __('Headers custom', 'webhooks') . '</label>';
+        echo "<textarea name='headers' rows='3' class='form-control' style='font-family:monospace; font-size:12px;' "
             . "placeholder='Authorization: Bearer xxx&#10;X-Custom: value'>"
             . htmlspecialchars((string) ($this->fields['headers'] ?? ''))
             . '</textarea>';
-        echo '<div class="text-muted"><small>'
-            . __('Un "Clave: Valor" por línea. Dejar vacío para usar los valores por defecto.', 'webhooks')
-            . '</small></div></td></tr>';
+        echo '<div class="form-text">' . __('Un "Clave: Valor" por línea. Dejar vacío para usar los valores por defecto.', 'webhooks') . '</div>';
+        echo '</div></div>'; // col, row
+        echo '</div></div>'; // card-body, card
 
-        echo "<tr class='tab_bg_2'><th colspan='4'><i class='ti ti-target'></i> "
-            . __('Alcance y disparador', 'webhooks') . '</th></tr>';
+        // --- Expiration scope (trigger_type = expiration) ---
+        echo '<div class="card mb-3 wh-row-expiration">';
+        echo '<div class="card-header"><h3 class="card-title"><i class="ti ti-target"></i> '
+            . __('Alcance y disparador', 'webhooks') . '</h3></div>';
+        echo '<div class="card-body">';
 
-        echo "<tr class='tab_bg_1'>";
-        echo '<td><i class="ti ti-list-check"></i> ' . __('Tipos de ítem', 'webhooks') . ' <span class="red">*</span></td>';
-        echo "<td colspan='3'>";
-        echo "<div style='display:flex; flex-wrap:wrap; gap:10px;'>";
+        echo '<label class="form-label"><i class="ti ti-list-check"></i> ' . __('Tipos de ítem', 'webhooks') . ' <span class="red">*</span></label>';
+        echo "<div style='display:flex; flex-wrap:wrap; gap:10px;' class='mb-3'>";
         foreach (self::SUPPORTED_ITEMTYPES as $itemtype => $meta) {
             $checked = in_array($itemtype, $selected, true) ? 'checked' : '';
             $label   = self::itemtypeLabel($itemtype);
@@ -254,27 +333,68 @@ class PluginWebhooksWebhook extends CommonDBTM
                 . htmlspecialchars($label)
                 . '</label>';
         }
-        echo '</div></td></tr>';
+        echo '</div>';
 
-        echo "<tr class='tab_bg_1'>";
-        echo '<td><i class="ti ti-calendar-clock"></i> ' . __('Anticipación (días)', 'webhooks') . '</td>';
-        echo "<td colspan='3'>";
-        echo "<input type='number' name='anticipation_days' value='"
-            . (int) ($this->fields['anticipation_days'] ?? 30)
-            . "' min='1' max='3650' step='1' style='width:120px;'>";
+        echo '<label class="form-label"><i class="ti ti-calendar-clock"></i> ' . __('Anticipación (días)', 'webhooks') . '</label><br>';
+        $anticip = (int) ($this->fields['anticipation_days'] ?? 30);
+        if ($anticip <= 0) {
+            $anticip = 30;
+        }
+        echo "<input type='number' name='anticipation_days' value='" . $anticip
+            . "' min='1' max='3650' step='1' class='form-control d-inline-block' style='width:120px;'>";
         echo '<span class="text-muted">&nbsp; ' . __('días antes del vencimiento para empezar a alertar', 'webhooks') . '</span>';
-        echo '</td></tr>';
+        echo '</div></div>'; // card-body, card
 
-        echo "<tr class='tab_bg_2'><th colspan='4'><i class='ti ti-message-2'></i> "
-            . __('Notas', 'webhooks') . '</th></tr>';
+        // --- Ticket events (trigger_type = ticket) ---
+        echo '<div class="card mb-3 wh-row-ticket">';
+        echo '<div class="card-header"><h3 class="card-title"><i class="ti ti-ticket"></i> '
+            . __('Eventos de ticket', 'webhooks') . '</h3></div>';
+        echo '<div class="card-body">';
+        echo '<div class="row g-3 mb-1"><div class="col-md-3">';
+        echo '<label class="form-label"><i class="ti ti-category"></i> ' . __('Tipo', 'webhooks') . '</label><br>';
+        echo '<strong>' . __('Ticket') . '</strong>';
+        echo '</div></div>';
 
-        echo "<tr class='tab_bg_1'>";
-        echo '<td>' . __('Comments') . '</td>';
-        echo "<td colspan='3'>";
-        echo "<textarea name='comment' rows='2' style='width:100%;'>"
+        echo '<label class="form-label"><i class="ti ti-bolt"></i> ' . __('Evento', 'webhooks') . ' <span class="red">*</span></label>';
+        $selected_events = $this->getSelectedEvents();
+        Dropdown::showFromArray('ticket_events', PluginWebhooksTicketEvent::EVENTS, [
+            'multiple' => true,
+            'values'   => $selected_events,
+            'width'    => '100%',
+        ]);
+        echo '<div class="form-text">'
+            . __('Podés elegir varios eventos para el mismo webhook. El filtrado fino (estado, prioridad, categoría, etc.) se configura en la pestaña “Filtros”.', 'webhooks')
+            . '</div>';
+        echo '</div></div>'; // card-body, card
+
+        echo '<div class="card mb-3">';
+        echo '<div class="card-header"><h3 class="card-title"><i class="ti ti-message-2"></i> '
+            . __('Notas', 'webhooks') . '</h3></div>';
+        echo '<div class="card-body">';
+        echo '<label class="form-label">' . __('Comments') . '</label>';
+        echo "<textarea name='comment' rows='2' class='form-control'>"
             . htmlspecialchars((string) ($this->fields['comment'] ?? ''))
             . '</textarea>';
-        echo '</td></tr>';
+        echo '</div></div>'; // card-body, card
+
+        // Show only the block relevant to the selected trigger type.
+        // Toggle visibility AND disabled state: hidden fields must not be
+        // validated or submitted (a hidden required/constrained input silently
+        // blocks the browser's form submit — "invalid control cannot be focused").
+        echo "<script>
+function webhooksToggleTrigger(v){
+  var isTicket = (v === 'ticket');
+  document.querySelectorAll('.wh-row-ticket').forEach(function(el){
+    el.style.display = isTicket ? '' : 'none';
+    el.querySelectorAll('input,select,textarea').forEach(function(f){ f.disabled = !isTicket; });
+  });
+  document.querySelectorAll('.wh-row-expiration').forEach(function(el){
+    el.style.display = isTicket ? 'none' : '';
+    el.querySelectorAll('input,select,textarea').forEach(function(f){ f.disabled = isTicket; });
+  });
+}
+webhooksToggleTrigger(" . json_encode($trigger) . ");
+</script>";
 
         $this->showFormButtons($options);
         return true;
@@ -286,11 +406,20 @@ class PluginWebhooksWebhook extends CommonDBTM
 
     public function showPayloadTab(): void
     {
-        $id       = (int) $this->fields['id'];
-        $template = (string) ($this->fields['payload_template'] ?? PluginWebhooksSender::DEFAULT_TEMPLATE);
+        $id        = (int) $this->fields['id'];
+        $is_ticket = $this->isTicketType();
+        $default   = $is_ticket
+            ? PluginWebhooksSender::DEFAULT_TICKET_TEMPLATE
+            : PluginWebhooksSender::DEFAULT_TEMPLATE;
+        $placeholders = $is_ticket
+            ? PluginWebhooksSender::TICKET_PLACEHOLDERS
+            : PluginWebhooksSender::PLACEHOLDERS;
+        $template = (string) ($this->fields['payload_template'] ?? $default);
         $action   = Plugin::getWebDir('webhooks') . '/front/webhook.form.php';
 
-        $sample_ctx = PluginWebhooksSender::buildTestContext($this);
+        $sample_ctx = $is_ticket
+            ? PluginWebhooksSender::buildTicketTestContext($this)
+            : PluginWebhooksSender::buildTestContext($this);
         [$preview, $preview_err] = PluginWebhooksSender::render($template, $sample_ctx);
         $preview_json = $preview !== null
             ? json_encode($preview, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
@@ -310,7 +439,7 @@ class PluginWebhooksWebhook extends CommonDBTM
 
         echo '<div class="mb-3"><strong>' . __('Placeholders disponibles (click para copiar)', 'webhooks') . '</strong></div>';
         echo '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px;">';
-        foreach (PluginWebhooksSender::PLACEHOLDERS as $key => $desc) {
+        foreach ($placeholders as $key => $desc) {
             $chip = '{' . $key . '}';
             echo "<span title='" . htmlspecialchars($desc) . "' "
                 . "onclick='navigator.clipboard.writeText(" . json_encode($chip) . "); this.style.background=\"#c8e6c9\"; setTimeout(()=>this.style.background=\"#e7f1ff\",600);' "
@@ -324,14 +453,12 @@ class PluginWebhooksWebhook extends CommonDBTM
             . htmlspecialchars($template) . '</textarea>';
 
         echo '<div class="mt-3 d-flex gap-2">';
-        echo Html::submit('<i class="ti ti-device-floppy"></i> ' . __('Guardar template', 'webhooks'), [
-            'name' => 'save_template', 'class' => 'btn btn-primary',
-        ]);
-        echo Html::submit('<i class="ti ti-restore"></i> ' . __('Restaurar template por defecto', 'webhooks'), [
-            'name'    => 'reset_template',
-            'class'   => 'btn btn-outline-secondary',
-            'confirm' => __('Esto sobrescribe el template actual. ¿Continuar?', 'webhooks'),
-        ]);
+        echo "<button type='submit' name='save_template' class='btn btn-primary'>"
+            . '<i class="ti ti-device-floppy"></i> ' . __('Guardar template', 'webhooks') . '</button>';
+        $reset_confirm = __('Esto sobrescribe el template actual. ¿Continuar?', 'webhooks');
+        echo "<button type='submit' name='reset_template' class='btn btn-outline-secondary' "
+            . "onclick='return confirm(" . htmlspecialchars(json_encode($reset_confirm), ENT_QUOTES) . ")'>"
+            . '<i class="ti ti-restore"></i> ' . __('Restaurar template por defecto', 'webhooks') . '</button>';
         echo '</div>';
 
         Html::closeForm();
@@ -651,7 +778,9 @@ class PluginWebhooksWebhook extends CommonDBTM
             . __('Enviar evento de prueba', 'webhooks') . '</h3></div>';
         echo '<div class="card-body">';
         echo '<p class="text-muted mb-3">'
-            . __('Dispara un evento sintético ("Contrato vence en 15 días") al URL configurado usando el template actual. No genera entrada de dedupe.', 'webhooks')
+            . ($this->isTicketType()
+                ? __('Dispara un evento sintético ("Ticket creado") al URL configurado usando el template actual. No registra el envío en el log de eventos.', 'webhooks')
+                : __('Dispara un evento sintético ("Contrato vence en 15 días") al URL configurado usando el template actual. No genera entrada de dedupe.', 'webhooks'))
             . '</p>';
 
         echo "<form method='post' action='" . htmlspecialchars($action) . "'>";
@@ -684,6 +813,52 @@ class PluginWebhooksWebhook extends CommonDBTM
         );
         echo '</tbody></table>';
         echo '</div></div>';
+
+        // "Último envío real" above is webhook-level (last HTTP status/response
+        // regardless of which ticket caused it). For a ticket webhook, name the
+        // actual ticket + event behind that last send.
+        if ($this->isTicketType()) {
+            $this->showLastTicketEventContext();
+        }
+    }
+
+    private function showLastTicketEventContext(): void
+    {
+        global $DB;
+
+        $row = null;
+        foreach ($DB->request([
+            'FROM'  => 'glpi_plugin_webhooks_events',
+            'WHERE' => ['webhooks_id' => (int) $this->fields['id']],
+            'ORDER' => ['event_date DESC'],
+            'LIMIT' => 1,
+        ]) as $r) {
+            $row = $r;
+        }
+
+        if ($row === null) {
+            echo '<div class="text-muted small mt-2"><i class="ti ti-info-circle"></i> '
+                . __('Todavía no se registró ningún evento de ticket para este webhook.', 'webhooks')
+                . '</div>';
+            return;
+        }
+
+        $tid    = (int) $row['items_id'];
+        $link   = Ticket::getFormURLWithID($tid);
+        $status = (int) ($row['http_status'] ?? 0);
+        $ok     = $status >= 200 && $status < 300;
+        $badge  = $ok
+            ? '<span class="badge bg-success">' . $status . '</span>'
+            : '<span class="badge bg-danger">' . ($status > 0 ? $status : 'ERR') . '</span>';
+
+        echo '<div class="text-muted small mt-2"><i class="ti ti-info-circle"></i> '
+            . sprintf(
+                __('El "Último envío real" de arriba fue disparado por: %1$s (%2$s) — %3$s. Ver la pestaña "Registro de eventos" para el historial completo.', 'webhooks'),
+                '<a href="' . htmlspecialchars($link) . '">Ticket #' . $tid . '</a>',
+                htmlspecialchars(PluginWebhooksTicketEvent::eventLabel((string) $row['event'])),
+                $badge
+            )
+            . '</div>';
     }
 
     private function renderStatusRow(string $label, $when, $status, $detail): void
@@ -794,6 +969,239 @@ class PluginWebhooksWebhook extends CommonDBTM
         if ($count === 0) {
             echo '<tr><td colspan="6" class="text-center text-muted p-4">'
                 . '<i class="ti ti-inbox"></i> ' . __('Todavía no se enviaron eventos.', 'webhooks')
+                . '</td></tr>';
+        }
+
+        echo '</tbody></table>';
+        echo '</div></div>';
+    }
+
+    // -----------------------------------------------------------------------
+    // Tab: Filtros (ticket webhooks) — embedded native GLPI criteria builder
+    // -----------------------------------------------------------------------
+
+    public function getTicketCriteria(): array
+    {
+        if (empty($this->fields['ticket_criteria'])) {
+            return [];
+        }
+        $decoded = json_decode((string) $this->fields['ticket_criteria'], true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * Structurally cleans a posted criteria array (from GLPI's own search
+     * builder) before it's stored as JSON: keeps only recognised keys per node
+     * type (plain criterion / group / meta-criterion) and caps nesting depth.
+     * The values themselves (field id, searchtype, value) are trusted as-is —
+     * only a plugin_webhooks UPDATE right holder can reach this, and they are
+     * replayed through the same read-only Search engine, never raw SQL.
+     */
+    public static function sanitizeCriteria($criteria, int $depth = 0): array
+    {
+        if (!is_array($criteria) || $depth > 5) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($criteria as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $link = in_array(($row['link'] ?? 'AND'), ['AND', 'OR', 'AND NOT', 'OR NOT'], true)
+                ? $row['link']
+                : 'AND';
+
+            if (isset($row['criteria']) && is_array($row['criteria'])) {
+                // Criteria group.
+                $sub = self::sanitizeCriteria($row['criteria'], $depth + 1);
+                if ($sub !== []) {
+                    $out[] = ['link' => $link, 'criteria' => $sub];
+                }
+                continue;
+            }
+
+            $field = $row['field'] ?? '';
+            if ($field === '' || $field === null) {
+                continue; // incomplete row (e.g. an "add rule" click left blank)
+            }
+
+            $clean = [
+                'link'       => $link,
+                'field'      => is_scalar($field) ? $field : (string) $field,
+                'searchtype' => (string) ($row['searchtype'] ?? 'contains'),
+                'value'      => is_scalar($row['value'] ?? null) ? $row['value'] : (string) ($row['value'] ?? ''),
+            ];
+            if (!empty($row['meta'])) {
+                $clean['meta']     = true;
+                $clean['itemtype'] = (string) ($row['itemtype'] ?? '');
+            }
+            $out[] = $clean;
+        }
+        return $out;
+    }
+
+    public function showFiltersTab(): void
+    {
+        $id       = (int) $this->fields['id'];
+        $action   = Plugin::getWebDir('webhooks') . '/front/webhook.form.php';
+        $criteria = $this->getTicketCriteria();
+
+        echo '<div class="card mb-3">';
+        echo '<div class="card-header"><h3 class="card-title"><i class="ti ti-filter"></i> '
+            . __('Filtro por criterios de Ticket', 'webhooks') . '</h3>';
+        echo '<div class="card-subtitle text-muted">'
+            . __('Un ticket dispara sólo si entra en el alcance de entidad del webhook Y coincide con estos criterios. Mismo motor y mismos campos que la búsqueda de la lista de Tickets (estado, prioridad, categoría, técnico, título, contenido, SLA, campos de plugins…). Sin criterios = todos los del alcance.', 'webhooks')
+            . '</div></div>';
+        echo '<div class="card-body">';
+
+        echo "<form method='post' action='" . htmlspecialchars($action) . "'>";
+        echo Html::hidden('id', ['value' => $id]);
+        echo Html::hidden('_glpi_csrf_token', ['value' => Session::getNewCSRFToken()]);
+
+        // Render GLPI's own multi-criteria builder (the exact widget used on the
+        // Ticket list), but standalone: no own <form>, no search/bookmark/reset
+        // buttons — those come from OUR form below. displayCriteria() reads each
+        // row's current field/value from $_SESSION['glpisearch']['Ticket']
+        // ['criteria'], so we stash the webhook's saved criteria into that slot
+        // just for this render and restore whatever was there right after, to
+        // avoid clobbering the user's own in-progress Ticket list search.
+        //
+        // mainform=false is required to avoid nesting a second <form> inside
+        // ours, but GLPI's own twig ALSO gates the "remove rule" (-) button's
+        // click handler behind mainform — with it false, that JS never binds,
+        // so rows visually pile up (each looks "duplicated" because the old
+        // one can never be removed). We ship the exact same handler ourselves
+        // right after. The widget's own CSS for mainform=false is a narrow
+        // "sub_criteria" inline box (meant to be nested INSIDE an already-
+        // rendered search page); we override it to look like our own cards.
+        echo '<style>
+            .wh-criteria-builder .sub_criteria { width: 100%; display: block; border: 0; margin: 0; padding: 0; }
+            .wh-criteria-builder .criteria-list { width: 100%; }
+        </style>';
+        echo '<div class="wh-criteria-builder">';
+        $session_backup = $_SESSION['glpisearch']['Ticket']['criteria'] ?? null;
+        $_SESSION['glpisearch']['Ticket']['criteria'] = $criteria;
+        Search::showGenericSearch('Ticket', [
+            'criteria'     => $criteria,
+            'mainform'     => false,
+            'showaction'   => false,
+            'showbookmark' => false,
+            'showreset'    => false,
+            'showfolding'  => false,
+        ]);
+        if ($session_backup === null) {
+            unset($_SESSION['glpisearch']['Ticket']['criteria']);
+        } else {
+            $_SESSION['glpisearch']['Ticket']['criteria'] = $session_backup;
+        }
+        echo '</div>';
+        echo "<script>
+        $(document).off('click', '.remove-search-criteria').on('click', '.remove-search-criteria', function() {
+            var tooltip = bootstrap.Tooltip.getInstance(this);
+            if (tooltip !== null) { tooltip.dispose(); }
+            var rowID = $(this).data('rowid');
+            $('#' + rowID).remove();
+        });
+        </script>";
+
+        echo "<div class='mt-2'><button type='submit' name='save_filter' class='btn btn-primary'>"
+            . '<i class="ti ti-device-floppy"></i> ' . __('Guardar filtro', 'webhooks') . '</button></div>';
+        Html::closeForm();
+
+        // Live feedback: how many tickets match the current saved filter.
+        if ($criteria !== []) {
+            $count = null;
+            try {
+                $data  = Search::getDatas('Ticket', [
+                    'criteria'   => $criteria,
+                    'is_deleted' => 0,
+                    'start'      => 0,
+                ]);
+                $count = (int) ($data['data']['totalcount'] ?? 0);
+            } catch (\Throwable $e) {
+                $count = null;
+            }
+            if ($count !== null) {
+                echo '<div class="alert alert-info mt-3 mb-0"><i class="ti ti-list-search"></i> '
+                    . sprintf(__('Ahora mismo coinciden %d ticket(s) con este filtro (según tu alcance de visibilidad).', 'webhooks'), $count)
+                    . '</div>';
+            } else {
+                echo '<div class="alert alert-warning mt-3 mb-0"><i class="ti ti-alert-triangle"></i> '
+                    . __('No se pudo evaluar el filtro guardado. Revisá los criterios.', 'webhooks')
+                    . '</div>';
+            }
+        }
+
+        echo '</div></div>';
+    }
+
+    // -----------------------------------------------------------------------
+    // Tab: Registro de eventos (ticket webhooks)
+    // -----------------------------------------------------------------------
+
+    public function showEventLogTab(): void
+    {
+        global $DB;
+
+        $id = (int) $this->fields['id'];
+
+        $iter = $DB->request([
+            'FROM'  => 'glpi_plugin_webhooks_events',
+            'WHERE' => ['webhooks_id' => $id],
+            'ORDER' => ['event_date DESC'],
+            'LIMIT' => 100,
+        ]);
+
+        echo '<div class="card">';
+        echo '<div class="card-header"><h3 class="card-title"><i class="ti ti-history"></i> '
+            . __('Últimos 100 eventos', 'webhooks') . '</h3></div>';
+        echo '<div class="card-body p-0">';
+        echo '<table class="table table-hover table-vcenter mb-0">';
+        echo '<thead><tr>';
+        echo '<th>' . __('Cuándo', 'webhooks') . '</th>';
+        echo '<th>' . __('Evento', 'webhooks') . '</th>';
+        echo '<th>' . __('Ticket', 'webhooks') . '</th>';
+        echo '<th>' . __('HTTP', 'webhooks') . '</th>';
+        echo '<th>' . __('Detalle', 'webhooks') . '</th>';
+        echo '</tr></thead><tbody>';
+
+        $count = 0;
+        foreach ($iter as $row) {
+            $count++;
+            $status = (int) ($row['http_status'] ?? 0);
+            if ($status >= 200 && $status < 300) {
+                $badge = '<span class="badge bg-success">' . $status . '</span>';
+            } elseif ($status === 0) {
+                $badge = '<span class="badge bg-dark">ERR</span>';
+            } else {
+                $badge = '<span class="badge bg-danger">' . $status . '</span>';
+            }
+
+            $detail = (string) ($row['error'] ?? '');
+            if ($detail === '') {
+                $detail = (string) ($row['response_excerpt'] ?? '');
+            }
+            if ($status >= 200 && $status < 300 && $detail === '') {
+                $detail = 'OK';
+            }
+
+            $tid  = (int) $row['items_id'];
+            $link = Ticket::getFormURLWithID($tid);
+
+            echo '<tr>';
+            echo '<td>' . Html::convDateTime((string) $row['event_date']) . '</td>';
+            echo '<td>' . htmlspecialchars(PluginWebhooksTicketEvent::eventLabel((string) $row['event'])) . '</td>';
+            echo '<td><a href="' . htmlspecialchars($link) . '">#' . $tid . '</a></td>';
+            echo '<td>' . $badge . '</td>';
+            echo '<td><small>' . htmlspecialchars(PluginWebhooksSender::excerpt($detail, 120)) . '</small></td>';
+            echo '</tr>';
+        }
+
+        if ($count === 0) {
+            echo '<tr><td colspan="5" class="text-center text-muted p-4">'
+                . '<i class="ti ti-inbox"></i> ' . __('Todavía no se registraron eventos.', 'webhooks')
                 . '</td></tr>';
         }
 

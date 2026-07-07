@@ -41,11 +41,27 @@ if (isset($_POST['add'])) {
     }
     Html::back();
 
-} elseif (isset($_POST['reset_template'])) {
-    $webhook->check((int) $_POST['id'], UPDATE);
+} elseif (isset($_POST['save_filter'])) {
+    $id = (int) $_POST['id'];
+    $webhook->check($id, UPDATE);
+    $clean = PluginWebhooksWebhook::sanitizeCriteria($_POST['criteria'] ?? []);
     $webhook->update([
-        'id'               => (int) $_POST['id'],
-        'payload_template' => PluginWebhooksSender::DEFAULT_TEMPLATE,
+        'id'              => $id,
+        'ticket_criteria' => json_encode($clean),
+    ]);
+    Session::addMessageAfterRedirect(__('Filtro guardado.', 'webhooks'));
+    Html::back();
+
+} elseif (isset($_POST['reset_template'])) {
+    $id = (int) $_POST['id'];
+    $webhook->check($id, UPDATE);
+    $webhook->getFromDB($id);
+    $default = ($webhook->fields['trigger_type'] ?? 'expiration') === 'ticket'
+        ? PluginWebhooksSender::DEFAULT_TICKET_TEMPLATE
+        : PluginWebhooksSender::DEFAULT_TEMPLATE;
+    $webhook->update([
+        'id'               => $id,
+        'payload_template' => $default,
     ]);
     Session::addMessageAfterRedirect(__('Template por defecto restaurado.', 'webhooks'));
     Html::back();
@@ -95,12 +111,17 @@ if (isset($_POST['add'])) {
     $webhook->check($id, UPDATE);
     $webhook->getFromDB($id);
 
-    $template = (string) ($webhook->fields['payload_template'] ?? '');
+    $is_ticket = ($webhook->fields['trigger_type'] ?? 'expiration') === 'ticket';
+    $template  = (string) ($webhook->fields['payload_template'] ?? '');
     if (trim($template) === '') {
-        $template = PluginWebhooksSender::DEFAULT_TEMPLATE;
+        $template = $is_ticket
+            ? PluginWebhooksSender::DEFAULT_TICKET_TEMPLATE
+            : PluginWebhooksSender::DEFAULT_TEMPLATE;
     }
 
-    $ctx = PluginWebhooksSender::buildTestContext($webhook);
+    $ctx = $is_ticket
+        ? PluginWebhooksSender::buildTicketTestContext($webhook)
+        : PluginWebhooksSender::buildTestContext($webhook);
     [$payload, $err] = PluginWebhooksSender::render($template, $ctx);
 
     if ($payload === null) {

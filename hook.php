@@ -14,9 +14,11 @@ function plugin_webhooks_install(): bool
     }
 
     PluginWebhooksProfile::initProfile();
-    if (isset($_SESSION['glpiactiveprofile']['id'])) {
-        PluginWebhooksProfile::createFirstAccess((int) $_SESSION['glpiactiveprofile']['id']);
-    }
+    // Grant to Super-Admin always (handled inside createFirstAccess) and, when
+    // installed from a logged-in session, to the installer's own profile too.
+    // No session gate: a CLI install (bin/console) has no session, and gating on
+    // it left every profile — including Super-Admin — without the right.
+    PluginWebhooksProfile::createFirstAccess((int) ($_SESSION['glpiactiveprofile']['id'] ?? 0));
 
     CronTask::register(
         'PluginWebhooksCrontask',
@@ -45,6 +47,27 @@ function plugin_webhooks_migrate($DB): void
             "VARCHAR(10) NOT NULL DEFAULT 'POST'",
             ['after' => 'url']
         );
+    }
+    // Ticket-events feature: a webhook is either 'expiration' (cron) or 'ticket'
+    // (lifecycle hooks). Existing rows default to 'expiration' so nothing breaks.
+    if (!$DB->fieldExists('glpi_plugin_webhooks_webhooks', 'trigger_type')) {
+        $migration->addField(
+            'glpi_plugin_webhooks_webhooks',
+            'trigger_type',
+            "VARCHAR(20) NOT NULL DEFAULT 'expiration'",
+            ['after' => 'headers']
+        );
+    }
+    if (!$DB->fieldExists('glpi_plugin_webhooks_webhooks', 'ticket_events')) {
+        $migration->addField('glpi_plugin_webhooks_webhooks', 'ticket_events', 'text', ['after' => 'anticipation_days']);
+    }
+    // Filter for ticket_events: an embedded GLPI criteria builder, not a
+    // reference to a saved search (superseded during 1.1.0 development).
+    if ($DB->fieldExists('glpi_plugin_webhooks_webhooks', 'savedsearches_id')) {
+        $migration->dropField('glpi_plugin_webhooks_webhooks', 'savedsearches_id');
+    }
+    if (!$DB->fieldExists('glpi_plugin_webhooks_webhooks', 'ticket_criteria')) {
+        $migration->addField('glpi_plugin_webhooks_webhooks', 'ticket_criteria', 'text', ['after' => 'ticket_events']);
     }
     if (!$DB->fieldExists('glpi_plugin_webhooks_webhooks', 'headers')) {
         $migration->addField('glpi_plugin_webhooks_webhooks', 'headers', 'text', ['after' => 'http_method']);
@@ -89,6 +112,12 @@ function plugin_webhooks_migrate($DB): void
         }
     }
 
+    // Ticket-events log table. The SQL uses CREATE TABLE IF NOT EXISTS, so
+    // re-running the install file only creates what is missing.
+    if (!$DB->tableExists('glpi_plugin_webhooks_events')) {
+        $DB->runFile(Plugin::getPhpDir('webhooks') . '/sql/empty-1.0.0.sql');
+    }
+
     $migration->executeMigration();
 }
 
@@ -102,6 +131,7 @@ function plugin_webhooks_uninstall(): bool
         [
             'glpi_plugin_webhooks_webhooks',
             'glpi_plugin_webhooks_sent',
+            'glpi_plugin_webhooks_events',
             'glpi_plugin_webhooks_profiles',
         ] as $table
     ) {

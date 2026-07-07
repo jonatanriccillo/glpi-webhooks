@@ -1,10 +1,18 @@
 # Webhooks plugin for GLPI 11
 
-Registro genérico de webhooks. Cada webhook es `(nombre, URL, método,
-headers, anticipation_days, template de payload, itemtypes, entidad)`.
-Features del plugin publican contra este registro.
+Registro genérico de webhooks. Cada webhook tiene un **tipo de disparador**
+(`trigger_type`) que elige contra qué familia de features reacciona:
 
-## Feature actual: avisos de vencimiento
+- **Vencimientos** (`expiration`): cron que avisa antes de que venzan
+  contratos, licencias, certificados, dominios y garantías.
+- **Eventos de ticket** (`ticket`): dispara en tiempo real cuando un
+  ticket se crea, cambia de estado, se resuelve/cierra, se asigna, recibe
+  un seguimiento/tarea/solución, o cambia de prioridad/categoría.
+
+Config común: `(nombre, URL, método, headers, template de payload, entidad)`.
+El resto depende del tipo (ver cada sección).
+
+## Feature: avisos de vencimiento
 
 Cron diario `expirationcheck` que escanea **todos** los ítems (sin
 depender del flag "alertas" por entidad en GLPI) y, para cada webhook
@@ -27,6 +35,67 @@ Itemtypes soportados:
 dentro de la ventana envía de todos modos (una vez). Si el ítem se
 renueva (cambia `expiration_date`), se envía un nuevo aviso.
 
+## Feature: eventos de ticket
+
+Webhook con disparador **Eventos de ticket**. En vez de un cron, engancha
+los hooks de ciclo de vida de GLPI y dispara en tiempo real. En **Tipo**
+(fijo en "Ticket") + **Evento** elegís, con un combobox buscable (podés
+elegir varios), a qué eventos te suscribís. El catálogo es **el mismo que
+usa GLPI para las notificaciones por correo** (Configuración >
+Notificaciones > Ticket) — mismas claves, mismo significado:
+
+| Evento | Cuándo dispara |
+|---|---|
+| Ticket nuevo (`new`) | se crea un ticket |
+| Actualización de ticket (`update`) | cambia cualquier campo del ticket |
+| Ticket resuelto (`solved`) | pasa a un estado resuelto |
+| Solución rechazada (`rejectsolution`) | se rechaza una solución propuesta |
+| Cierre del ticket (`closed`) | pasa a un estado cerrado |
+| Eliminación del ticket (`delete`) | se envía a la papelera |
+| Nuevo/a usuario/grupo solicitante | se agrega un solicitante |
+| Nuevo/a usuario/grupo observador | se agrega un observador |
+| Nuevo técnico/grupo/proveedor asignado | se agrega un asignado |
+| Nueva/actualización/eliminación de tarea | ciclo de vida de una tarea |
+| Nuevo/actualización/eliminación de seguimiento | ciclo de vida de un seguimiento |
+| Nuevo documento adjunto | se adjunta un archivo |
+| Solicitud / respuesta de aprobación | ciclo de una validación |
+| Encuesta de satisfacción enviada / respondida | ciclo de la encuesta |
+| Motivo de pausa agregado / quitado | ciclo de un "pending reason" |
+
+**No están disponibles** (GLPI los dispara por cron o motor de reglas, no
+por una acción puntual — no se pueden replicar con hooks de ciclo de vida):
+recordatorio de aprobación, tickets no resueltos, recordatorios automáticos
+de SLA/OLA, menciones de usuario, recordatorio automático, cierre
+automático por motivo de pausa.
+
+### Filtro (pestaña "Filtros")
+
+El filtrado fino usa el **mismo constructor de criterios de la lista de
+Tickets**, embebido directamente en la pestaña — no hay que crear nada
+aparte:
+
+1. En la pestaña **Filtros** del webhook, agregá reglas con **"+ regla"**:
+   elegís el campo (título, descripción, estado, prioridad, categoría,
+   técnico, SLA, cualquier campo de Ticket o de un plugin), el operador, y
+   el valor (con el mismo selector que usa GLPI según el tipo de campo).
+   También podés agrupar reglas con **"+ grupo"** y combinarlas con
+   AND/OR.
+2. **Guardar filtro**. Un ticket dispara sólo si entra en el alcance de
+   entidad del webhook **y** coincide con estos criterios. Sin criterios =
+   todos los del alcance. La pestaña muestra en vivo cuántos tickets
+   coinciden ahora mismo.
+
+### Notas de comportamiento
+
+- Los envíos corren **dentro del guardado del ticket**, con timeout corto
+  (8s) y atrapando cualquier error: un webhook lento o caído nunca rompe ni
+  bloquea la operación del ticket.
+- Un mismo cambio puede disparar varios eventos (p. ej. resolver dispara
+  `status_changed` **y** `solved`; al crear con técnico asignado dispara
+  `created` **y** `assigned`). Suscribite sólo a los que quieras.
+- El historial vive en la pestaña **Registro de eventos** (sin dedupe: cada
+  evento se registra).
+
 ## Instalación
 
 1. Copiar `webhooks/` a `<GLPI>/plugins/webhooks/`.
@@ -40,14 +109,21 @@ borrar datos.
 
 ## UI del webhook
 
-Cada webhook tiene 4 pestañas:
+Las pestañas dependen del **tipo de disparador**:
+
+- **Vencimientos**: Principal · Payload · Por vencer · Prueba y estado ·
+  Registro de envíos.
+- **Eventos de ticket**: Principal · Payload · **Filtros** · Prueba y estado ·
+  **Registro de eventos**.
 
 ### Pestaña principal
 
-- **Connection**: nombre, URL, método HTTP (POST/PUT/PATCH), headers
-  custom (uno por línea `K: V`), activo.
-- **Scope & trigger**: itemtypes (chips clickeables), entidad +
-  sub-entidades, **Anticipation (days)** (default 30).
+- **Tipo de webhook**: selector *Vencimientos* / *Eventos de ticket*. Cambia
+  qué se muestra debajo.
+- **Conexión**: nombre, URL, método HTTP (POST/PUT/PATCH), headers custom
+  (uno por línea `K: V`), activo, entidad + sub-entidades.
+- Según el tipo: itemtypes + **Anticipación (días)** (vencimientos), o
+  **Eventos suscritos** (tickets).
 
 ### Pestaña "Payload"
 
